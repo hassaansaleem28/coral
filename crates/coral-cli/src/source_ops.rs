@@ -6,8 +6,8 @@ use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, query_test_result,
+    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -188,10 +188,12 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     println!();
     println!("  {}", style("Inputs").bold());
     for input in &source.inputs {
-        let kind_label = match SourceInputKind::try_from(input.kind) {
-            Ok(SourceInputKind::Variable) => "variable",
-            Ok(SourceInputKind::Secret) => "secret",
-            Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
+        let (kind_label, default_value) = match input.input.as_ref() {
+            Some(ProtoSourceInput::Variable(variable)) => {
+                ("variable", variable.default_value.as_str())
+            }
+            Some(ProtoSourceInput::Secret(_)) => ("secret", ""),
+            None => ("unknown", ""),
         };
         let requirement = if input.required {
             "required"
@@ -203,8 +205,8 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             style(&input.key).bold(),
             style(format!("({kind_label}, {requirement})")).dim()
         );
-        if !input.default_value.is_empty() {
-            println!("      default: {}", input.default_value);
+        if !default_value.is_empty() {
+            println!("      default: {default_value}");
         }
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
@@ -329,25 +331,6 @@ fn collect_inputs_with(
     }
 
     Ok((variables, secrets))
-}
-
-pub(crate) fn manifest_input_from_proto(
-    input: &SourceInputSpec,
-) -> Result<ManifestInputSpec, anyhow::Error> {
-    let kind = match SourceInputKind::try_from(input.kind) {
-        Ok(SourceInputKind::Variable) => ManifestInputKind::Variable,
-        Ok(SourceInputKind::Secret) => ManifestInputKind::Secret,
-        Ok(SourceInputKind::Unspecified) | Err(_) => {
-            return Err(anyhow::anyhow!("unknown input kind for '{}'", input.key));
-        }
-    };
-    Ok(ManifestInputSpec {
-        key: input.key.clone(),
-        kind,
-        required: input.required,
-        default_value: input.default_value.clone(),
-        hint: (!input.hint.is_empty()).then(|| input.hint.clone()),
-    })
 }
 
 pub(crate) fn source_origin_label(origin: i32) -> &'static str {
@@ -715,6 +698,7 @@ mod tests {
                 required: false,
                 default_value: "https://api.linear.app".to_string(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "LINEAR_API_KEY".to_string(),
@@ -722,6 +706,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
         let env: HashMap<&str, &str> = [("LINEAR_API_KEY", "lin_token")].into_iter().collect();
@@ -745,6 +730,7 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
         let (variables, _) = collect_inputs_with(&inputs, |_| "https://override.test".to_string())
             .expect("env should override default");
@@ -760,6 +746,7 @@ mod tests {
             required: true,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
         let (variables, secrets) = collect_inputs_with(&inputs, |_| String::new())
             .expect("default should satisfy required");
@@ -777,6 +764,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "OTHER_KEY".to_string(),
@@ -784,6 +772,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
         let error = collect_inputs_with(&inputs, |_| String::new())
@@ -811,6 +800,7 @@ mod tests {
             required: false,
             default_value: String::new(),
             hint: None,
+            credential: None,
         }];
         let (variables, secrets) =
             collect_inputs_with(&inputs, |_| String::new()).expect("optional should be omitted");
@@ -826,6 +816,7 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         };
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
@@ -842,6 +833,7 @@ mod tests {
             required: true,
             default_value: String::new(),
             hint: None,
+            credential: None,
         };
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
